@@ -1,93 +1,120 @@
 # openid-azure-token
 
+A lightweight Laravel package for Azure Entra ID (OpenID Connect) authentication using token-only sign-in.
 
+This package is built on top of Laravel Socialite and SocialiteProviders. It validates the Azure id_token, reads user identity from JWT claims.
 
-## Getting started
+Why this package?
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+* Laravel-friendly authentication flow
+* Minimal OIDC scopes: openid, profile, email
+* No Microsoft Graph dependency
+* Uses Azure JWKS to validate token signatures
+* Keeps sign-in simple for Laravel applications
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+Features
 
-## Add your files
+* Custom Azure OIDC Socialite provider
+* JWT validation for Azure id_token
+* JWKS-based public key resolution
+* Extracts user info from token claims
+* Easy integration with Laravel auth flows
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+Requirements
 
-```
-cd existing_repo
-git remote add origin https://gitlab.it.mcgill.ca/lts/adgen/openid-azure-token.git
-git branch -M main
-git push -uf origin main
-```
+* PHP 8.1+
+* Socialite
+* SocialiteProviders Manager
 
-## Integrate with your tools
+Compatibility
 
-* [Set up project integrations](https://gitlab.it.mcgill.ca/lts/adgen/openid-azure-token/-/settings/integrations)
+This package will be maintained in two Laravel support tracks:
 
-## Collaborate with your team
+* Laravel 10 and below
+* Laravel 11 and above
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+The goal is to keep the package API the same while adjusting service provider registration and framework-specific wiring when needed.
 
-## Test and Deploy
+Installation
 
-Use the built-in continuous integration in GitLab.
+    Install the package through Composer:
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+    - composer require vendor/openid-azure-token
 
-***
+Configuration
 
-# Editing this README
+    Add your Azure OIDC settings to .env:
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+    AZURE_CLIENT_ID=your-client-id
+    AZURE_CLIENT_SECRET=your-client-secret
+    AZURE_TENANT_ID=your-tenant-id
+    AZURE_REDIRECT_URI=https://your-app.com/auth/azure/callback
 
-## Suggestions for a good README
+Register the provider
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+    Add the package service provider to Laravel if auto-discovery is not used:
 
-## Name
-Choose a self-explaining name for your project.
+    'providers' => [
+        // ...
+        App\Providers\YourPackageServiceProvider::class,
+    ],
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+Usage
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+    Redirect the user to Azure login:
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+    - return Socialite::driver('azure')->redirect();
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+    Handle the callback:
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+    - $user = Socialite::driver('azure')->user();
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+    The package will validate the token and return the user identity from Azure claims.
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+How it works
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+1. User clicks sign in with Azure
+2. Azure redirects back with an authorization response
+3. Package retrieves the id_token
+4. JWT is validated using Azure JWKS
+5. Claims such as sub, name, and email are extracted
+6. Laravel can log the user in or create a local account
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+Package structure
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+    openid-azure-token/
+    ├── src/
+    │   ├── Provider.php
+    │   ├── AzureTokenExtendSocialite.php
+    │   ├── AzureTokenServiceProvider.php
+    │   └── JwtValidator.php
+    ├── composer.json
+    └── README.md
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+Planned support approach
 
-## License
-For open source projects, say how it is licensed.
+We will keep the core token validation logic shared, and only separate framework bootstrapping where Laravel versions differ.
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+Possible layout:
+
+* src/ for shared package logic
+* version-specific service provider setup where needed
+* one README with clear compatibility notes
+
+Planned classes
+
+Provider.php
+
+    * Custom Socialite provider that handles Azure OIDC token-based login.
+
+AzureTokenExtendSocialite.php
+
+    * Registers the custom provider with SocialiteProviders.
+
+AzureTokenServiceProvider.php
+
+    * Laravel service provider for package bootstrapping.
+
+JwtValidator.php
+
+    * Validates Azure id_token using JWKS and token claims.
