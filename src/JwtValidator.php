@@ -22,7 +22,7 @@ class JwtValidator
         ]);
     }
 
-    public function validate(string $jwt, string $tenant, string $clientId ): array 
+    public function validate(string $jwt, string $tenant, string $clientId): array
     {
         // Step 1: get Azure OpenID configuration.
         $config = $this->fetchOpenIdConfiguration($tenant);
@@ -33,29 +33,55 @@ class JwtValidator
 
         // If Azure config does not contain these, stop.
         if (!$issuer || !$jwksUri) {
-            throw new RuntimeException('OpenID configuration is missing issuer or jwks_uri');
+            throw new RuntimeException(
+                'OpenID configuration is missing issuer or jwks_uri'
+            );
         }
 
         // Step 2: download Azure public keys.
         $jwks = $this->fetchJwks($jwksUri);
+
+        // Temporary diagnostic logging.
+        // Logs only public JWK metadata, never key material.
+        foreach ($jwks['keys'] as $key) {
+            \Log::debug('Azure OIDC JWKS key metadata', [
+                'kid' => $key['kid'] ?? null,
+                'kty' => $key['kty'] ?? null,
+                'alg' => $key['alg'] ?? null,
+                'use' => $key['use'] ?? null,
+            ]);
+        }
 
         try {
             // Allow 60 seconds of clock difference.
             JWT::$leeway = 60;
 
             // Step 3: verify signature and decode token using Azure public keys.
-            $decoded = JWT::decode($jwt, JWK::parseKeySet($jwks));
+            $decoded = JWT::decode(
+                $jwt,
+                JWK::parseKeySet($jwks)
+            );
+
         } catch (ExpiredException $e) {
-            throw new RuntimeException('ID token has expired', 0, $e); // Token is expired.
+            throw new RuntimeException(
+                'ID token has expired',
+                0,
+                $e
+            );
+
         } catch (UnexpectedValueException $e) {
             throw new RuntimeException(
-            'Invalid ID token: ' . $e->getMessage(),
-            0, $e
+                'Invalid ID token: ' . $e->getMessage(),
+                0,
+                $e
+            );
+        }
+
+        // Convert decoded object into a PHP array.
+        $claims = json_decode(
+            json_encode($decoded),
+            true
         );
-
-}
-
-        $claims = json_decode(json_encode($decoded), true); // Convert decoded object into a PHP array.
 
         // If conversion failed, stop.
         if (!is_array($claims)) {
@@ -63,17 +89,22 @@ class JwtValidator
         }
 
         // Step 4: check issuer.
-        $this->assertClaim($claims, 'iss', $issuer, 'Invalid issuer');
+        $this->assertClaim(
+            $claims,
+            'iss',
+            $issuer,
+            'Invalid issuer'
+        );
 
         // Step 5: check audience.
         $aud = $claims['aud'] ?? null;
+
         if (is_array($aud)) {
             // Some tokens may have multiple audiences.
             if (!in_array($clientId, $aud, true)) {
                 throw new RuntimeException('Invalid audience');
             }
         } elseif ($aud !== $clientId) {
-            // If audience is a single string, compare directly.
             throw new RuntimeException('Invalid audience');
         }
 
@@ -94,36 +125,59 @@ class JwtValidator
             trim($tenant)
         );
 
-        $response = $this->http->get($url); // Call Azure.
+        $response = $this->http->get($url);
 
-        $data = json_decode((string) $response->getBody(), true); // Convert JSON response to array.
+        // Convert JSON response to array.
+        $data = json_decode(
+            (string) $response->getBody(),
+            true
+        );
 
         // If response is not valid JSON, stop.
         if (!is_array($data)) {
-            throw new RuntimeException('Invalid OpenID configuration response');
+            throw new RuntimeException(
+                'Invalid OpenID configuration response'
+            );
         }
 
-        return $data; // Return config data.
+        return $data;
     }
 
     private function fetchJwks(string $jwksUri): array
     {
-        $response = $this->http->get($jwksUri); // Call the JWKS endpoint.
+        $response = $this->http->get($jwksUri);
 
-        $data = json_decode((string) $response->getBody(), true); // Convert JSON response to array.
+        // Convert JSON response to array.
+        $data = json_decode(
+            (string) $response->getBody(),
+            true
+        );
 
         // JWKS must contain a "keys" array.
-        if (!is_array($data) || !isset($data['keys']) || !is_array($data['keys'])) {
-            throw new RuntimeException('Invalid JWKS response');
+        if (
+            !is_array($data) ||
+            !isset($data['keys']) ||
+            !is_array($data['keys'])
+        ) {
+            throw new RuntimeException(
+                'Invalid JWKS response'
+            );
         }
 
-        return $data; // Return public keys.
+        return $data;
     }
 
-    private function assertClaim(array $claims, string $key, string $expected, string $errorMessage): void
-    {
+    private function assertClaim(
+        array $claims,
+        string $key,
+        string $expected,
+        string $errorMessage
+    ): void {
         // Check whether claim exists and matches expected value.
-        if (!isset($claims[$key]) || $claims[$key] !== $expected) {
+        if (
+            !isset($claims[$key]) ||
+            $claims[$key] !== $expected
+        ) {
             throw new RuntimeException($errorMessage);
         }
     }
