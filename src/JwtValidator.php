@@ -48,8 +48,12 @@ class JwtValidator
         } catch (ExpiredException $e) {
             throw new RuntimeException('ID token has expired', 0, $e); // Token is expired.
         } catch (UnexpectedValueException $e) {
-            throw new RuntimeException('Invalid ID token signature or format', 0, $e); // Signature invalid or token format wrong.
-        }
+            throw new RuntimeException(
+            'Invalid ID token: ' . $e->getMessage(),
+            0, $e
+        );
+
+}
 
         $claims = json_decode(json_encode($decoded), true); // Convert decoded object into a PHP array.
 
