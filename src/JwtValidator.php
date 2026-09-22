@@ -11,12 +11,10 @@ use UnexpectedValueException;
 
 class JwtValidator
 {
-    // HTTP client used to call Azure endpoints.
     private Client $http;
 
     public function __construct(?Client $http = null)
     {
-        // If no client is passed in, create one with a 10 second timeout.
         $this->http = $http ?? new Client([
             'timeout' => 10,
         ]);
@@ -24,42 +22,95 @@ class JwtValidator
 
     public function validate(string $jwt, string $tenant, string $clientId): array
     {
-        // Step 1: get Azure OpenID configuration.
+        // Step 1: Get Azure OpenID Connect configuration.
         $config = $this->fetchOpenIdConfiguration($tenant);
 
-        // Read issuer and jwks_uri from that config.
         $issuer = $config['issuer'] ?? null;
         $jwksUri = $config['jwks_uri'] ?? null;
 
-        // If Azure config does not contain these, stop.
         if (!$issuer || !$jwksUri) {
             throw new RuntimeException(
                 'OpenID configuration is missing issuer or jwks_uri'
             );
         }
 
-        // Step 2: download Azure public keys.
+        // Step 2: Read the JWT header so we know which key (kid)
+        // and algorithm (alg) were used to sign this token.
+        $header = $this->decodeJwtHeader($jwt);
+
+        $kid = $header['kid'] ?? null;
+        $alg = $header['alg'] ?? null;
+
+        if (!$kid) {
+            throw new RuntimeException('ID token is missing kid header');
+        }
+
+        if (!$alg) {
+            throw new RuntimeException('ID token is missing alg header');
+        }
+
+        // Microsoft Entra ID tokens are expected to use RS256
+        // for this application.
+        if ($alg !== 'RS256') {
+            throw new RuntimeException(
+                'Unsupported ID token signing algorithm: ' . $alg
+            );
+        }
+
+        // Step 3: Download Azure public signing keys.
         $jwks = $this->fetchJwks($jwksUri);
 
-        // Temporary diagnostic logging.
-        // Logs only public JWK metadata, never key material.
+        // Step 4: Find the exact Azure key referenced by the JWT.
+        $matchingKey = null;
+
         foreach ($jwks['keys'] as $key) {
-            \Log::debug('Azure OIDC JWKS key metadata', [
-                'kid' => $key['kid'] ?? null,
-                'kty' => $key['kty'] ?? null,
-                'alg' => $key['alg'] ?? null,
-                'use' => $key['use'] ?? null,
-            ]);
+            if (($key['kid'] ?? null) === $kid) {
+                $matchingKey = $key;
+                break;
+            }
         }
+
+        if (!$matchingKey) {
+            throw new RuntimeException(
+                'No Azure signing key found for kid: ' . $kid
+            );
+        }
+
+        // The Azure JWK response may omit "alg".
+        // Firebase JWT expects it, so supply the algorithm that
+        // we have already validated from the token header.
+        $matchingKey['alg'] = $alg;
+
+        // The application expects RSA signing keys.
+        if (($matchingKey['kty'] ?? null) !== 'RSA') {
+            throw new RuntimeException('Azure signing key is not RSA');
+        }
+
+        // The key must be intended for signatures.
+        if (
+            isset($matchingKey['use']) &&
+            $matchingKey['use'] !== 'sig'
+        ) {
+            throw new RuntimeException(
+                'Azure signing key is not intended for signatures'
+            );
+        }
+
+        // Pass only the matched key to Firebase.
+        $keySet = [
+            'keys' => [
+                $matchingKey,
+            ],
+        ];
 
         try {
             // Allow 60 seconds of clock difference.
             JWT::$leeway = 60;
 
-            // Step 3: verify signature and decode token using Azure public keys.
+            // Step 5: Verify the JWT signature and decode the claims.
             $decoded = JWT::decode(
                 $jwt,
-                JWK::parseKeySet($jwks)
+                JWK::parseKeySet($keySet)
             );
 
         } catch (ExpiredException $e) {
@@ -77,18 +128,18 @@ class JwtValidator
             );
         }
 
-        // Convert decoded object into a PHP array.
         $claims = json_decode(
             json_encode($decoded),
             true
         );
 
-        // If conversion failed, stop.
         if (!is_array($claims)) {
-            throw new RuntimeException('Could not read token claims');
+            throw new RuntimeException(
+                'Could not read token claims'
+            );
         }
 
-        // Step 4: check issuer.
+        // Step 6: Validate issuer.
         $this->assertClaim(
             $claims,
             'iss',
@@ -96,11 +147,10 @@ class JwtValidator
             'Invalid issuer'
         );
 
-        // Step 5: check audience.
+        // Step 7: Validate audience.
         $aud = $claims['aud'] ?? null;
 
         if (is_array($aud)) {
-            // Some tokens may have multiple audiences.
             if (!in_array($clientId, $aud, true)) {
                 throw new RuntimeException('Invalid audience');
             }
@@ -108,18 +158,19 @@ class JwtValidator
             throw new RuntimeException('Invalid audience');
         }
 
-        // Step 6: check expiry again as a safe backup.
-        if (isset($claims['exp']) && (int) $claims['exp'] < time()) {
+        // Step 8: Validate expiration.
+        if (
+            !isset($claims['exp']) ||
+            (int) $claims['exp'] < time()
+        ) {
             throw new RuntimeException('Token expired');
         }
 
-        // Step 7: return the verified claims.
         return $claims;
     }
 
     private function fetchOpenIdConfiguration(string $tenant): array
     {
-        // Build Azure OpenID config URL for the tenant.
         $url = sprintf(
             'https://login.microsoftonline.com/%s/v2.0/.well-known/openid-configuration',
             trim($tenant)
@@ -127,13 +178,11 @@ class JwtValidator
 
         $response = $this->http->get($url);
 
-        // Convert JSON response to array.
         $data = json_decode(
             (string) $response->getBody(),
             true
         );
 
-        // If response is not valid JSON, stop.
         if (!is_array($data)) {
             throw new RuntimeException(
                 'Invalid OpenID configuration response'
@@ -147,13 +196,11 @@ class JwtValidator
     {
         $response = $this->http->get($jwksUri);
 
-        // Convert JSON response to array.
         $data = json_decode(
             (string) $response->getBody(),
             true
         );
 
-        // JWKS must contain a "keys" array.
         if (
             !is_array($data) ||
             !isset($data['keys']) ||
@@ -167,13 +214,65 @@ class JwtValidator
         return $data;
     }
 
+    private function decodeJwtHeader(string $jwt): array
+    {
+        $parts = explode('.', $jwt);
+
+        if (count($parts) !== 3) {
+            throw new RuntimeException(
+                'Invalid JWT format'
+            );
+        }
+
+        $header = json_decode(
+            $this->base64UrlDecode($parts[0]),
+            true
+        );
+
+        if (!is_array($header)) {
+            throw new RuntimeException(
+                'Invalid JWT header'
+            );
+        }
+
+        return $header;
+    }
+
+    private function base64UrlDecode(string $value): string
+    {
+        $remainder = strlen($value) % 4;
+
+        if ($remainder !== 0) {
+            $value .= str_repeat(
+                '=',
+                4 - $remainder
+            );
+        }
+
+        $decoded = base64_decode(
+            strtr(
+                $value,
+                '-_',
+                '+/'
+            ),
+            true
+        );
+
+        if ($decoded === false) {
+            throw new RuntimeException(
+                'Invalid base64url encoding'
+            );
+        }
+
+        return $decoded;
+    }
+
     private function assertClaim(
         array $claims,
         string $key,
         string $expected,
         string $errorMessage
     ): void {
-        // Check whether claim exists and matches expected value.
         if (
             !isset($claims[$key]) ||
             $claims[$key] !== $expected
